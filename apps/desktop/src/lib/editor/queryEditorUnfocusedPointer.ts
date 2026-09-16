@@ -2,18 +2,26 @@
  * Click-to-focus for an unfocused SQL editor.
  *
  * On macOS WKWebView, a blurred contenteditable keeps its last selection. Clicking
- * after the scroller has moved can restore that caret (jumping the viewport) and
- * treat the click as a range from the old caret to the pointer. The scrollbar
- * pointer guard does not cover wheel/trackpad scrolling (#9296).
+ * after the scroller has moved can restore that caret and jump the viewport. The
+ * scrollbar pointer guard does not cover wheel/trackpad scrolling (#9296).
+ *
+ * This only focuses the editor early and restores the viewport around the focus
+ * jump. Selection stays with CodeMirror's built-in mousedown, which runs after
+ * custom domEventHandlers and owns caret placement, drag-to-select, and the
+ * Alt-rectangular and multi-cursor gestures. Calling event.preventDefault() here
+ * would suppress that handler entirely (InputState.runHandlers stops at the
+ * first handler whose event is default-prevented).
  */
 
+import { startsQueryEditorSelectionDrag } from "@/lib/editor/queryEditorPointerSelection";
+
 export interface UnfocusedQueryEditorPointerEvent {
+  altKey: boolean;
   button: number;
-  clientX: number;
-  clientY: number;
+  ctrlKey: boolean;
   detail: number;
+  metaKey: boolean;
   shiftKey: boolean;
-  preventDefault(): void;
 }
 
 export interface UnfocusedQueryEditorScroller {
@@ -25,16 +33,15 @@ export interface UnfocusedQueryEditorView {
   hasFocus: boolean;
   focus(): void;
   scrollDOM: UnfocusedQueryEditorScroller;
-  posAtCoords(coords: { x: number; y: number }): number | null;
-  dispatch(spec: { selection: { anchor: number }; userEvent?: string }): void;
 }
 
-export function shouldStabilizeUnfocusedQueryEditorPointerDown(event: Pick<UnfocusedQueryEditorPointerEvent, "button" | "detail" | "shiftKey">, view: Pick<UnfocusedQueryEditorView, "hasFocus"> | null | undefined): boolean {
+export function shouldStabilizeUnfocusedQueryEditorPointerDown(event: UnfocusedQueryEditorPointerEvent, view: Pick<UnfocusedQueryEditorView, "hasFocus"> | null | undefined): boolean {
   if (!view || view.hasFocus) return false;
   if (event.button !== 0) return false;
-  if (event.shiftKey) return false;
-  if (event.detail > 1) return false;
-  return true;
+  // Cmd/Ctrl belong to object navigation and Alt to CodeMirror's rectangular and
+  // multi-cursor gestures; those clicks must reach their own handlers unfocused.
+  if (event.metaKey || event.ctrlKey || event.altKey) return false;
+  return startsQueryEditorSelectionDrag(event);
 }
 
 export function preserveQueryEditorScrollPosition(scroller: UnfocusedQueryEditorScroller) {
@@ -46,22 +53,17 @@ export function preserveQueryEditorScrollPosition(scroller: UnfocusedQueryEditor
   };
 }
 
-/** Prevents the browser from scrolling the old caret into view, then places the caret at the click. */
+/**
+ * Focuses an unfocused editor before CodeMirror's built-in mousedown runs and
+ * restores the viewport synchronously plus once after a frame; the default is
+ * left unprevented so CodeMirror performs the selection itself.
+ */
 export function stabilizeUnfocusedQueryEditorPointerDown(view: UnfocusedQueryEditorView, event: UnfocusedQueryEditorPointerEvent, scheduleFrame?: (callback: () => void) => void): boolean {
   if (!shouldStabilizeUnfocusedQueryEditorPointerDown(event, view)) return false;
 
-  event.preventDefault();
   const restoreScroll = preserveQueryEditorScrollPosition(view.scrollDOM);
-  const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
   view.focus();
   restoreScroll();
-  if (pos != null) {
-    view.dispatch({
-      selection: { anchor: pos },
-      userEvent: "select.pointer",
-    });
-    restoreScroll();
-  }
   const schedule = scheduleFrame ?? (typeof requestAnimationFrame === "function" ? requestAnimationFrame : (callback) => callback());
   schedule(restoreScroll);
   return true;

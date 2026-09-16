@@ -1,27 +1,29 @@
 import { describe, expect, it, vi } from "vitest";
-import { preserveQueryEditorScrollPosition, shouldStabilizeUnfocusedQueryEditorPointerDown, stabilizeUnfocusedQueryEditorPointerDown, type UnfocusedQueryEditorView } from "@/lib/editor/queryEditorUnfocusedPointer";
+import { preserveQueryEditorScrollPosition, shouldStabilizeUnfocusedQueryEditorPointerDown, stabilizeUnfocusedQueryEditorPointerDown } from "@/lib/editor/queryEditorUnfocusedPointer";
 
 function createEvent(
   overrides: Partial<{
+    altKey: boolean;
     button: number;
-    clientX: number;
-    clientY: number;
+    ctrlKey: boolean;
     detail: number;
+    metaKey: boolean;
     shiftKey: boolean;
   }> = {},
 ) {
   return {
+    altKey: false,
     button: 0,
-    clientX: 120,
-    clientY: 80,
+    ctrlKey: false,
     detail: 1,
+    metaKey: false,
     shiftKey: false,
     preventDefault: vi.fn(),
     ...overrides,
   };
 }
 
-function createView(hasFocus = false, pos: number | null = 42): UnfocusedQueryEditorView {
+function createView(hasFocus = false) {
   const scrollDOM = { scrollLeft: 40, scrollTop: 320 };
   return {
     hasFocus,
@@ -29,11 +31,8 @@ function createView(hasFocus = false, pos: number | null = 42): UnfocusedQueryEd
       scrollDOM.scrollLeft = 0;
       scrollDOM.scrollTop = 0;
     }),
-    posAtCoords: vi.fn(() => pos),
-    dispatch: vi.fn(() => {
-      scrollDOM.scrollLeft = 8;
-      scrollDOM.scrollTop = 16;
-    }),
+    posAtCoords: vi.fn(() => 42),
+    dispatch: vi.fn(),
     scrollDOM,
   };
 }
@@ -47,7 +46,7 @@ describe("shouldStabilizeUnfocusedQueryEditorPointerDown", () => {
     ).toBe(true);
   });
 
-  it("leaves focused clicks, Shift-extend, multi-click, and non-primary buttons alone", () => {
+  it("leaves focused clicks, Shift-extend, multi-click, non-primary buttons, and modifier clicks alone", () => {
     expect(
       shouldStabilizeUnfocusedQueryEditorPointerDown(createEvent(), {
         hasFocus: true,
@@ -57,6 +56,9 @@ describe("shouldStabilizeUnfocusedQueryEditorPointerDown", () => {
     expect(shouldStabilizeUnfocusedQueryEditorPointerDown(createEvent({ detail: 2 }), { hasFocus: false })).toBe(false);
     expect(shouldStabilizeUnfocusedQueryEditorPointerDown(createEvent({ detail: 3 }), { hasFocus: false })).toBe(false);
     expect(shouldStabilizeUnfocusedQueryEditorPointerDown(createEvent({ button: 1 }), { hasFocus: false })).toBe(false);
+    expect(shouldStabilizeUnfocusedQueryEditorPointerDown(createEvent({ metaKey: true }), { hasFocus: false })).toBe(false);
+    expect(shouldStabilizeUnfocusedQueryEditorPointerDown(createEvent({ ctrlKey: true }), { hasFocus: false })).toBe(false);
+    expect(shouldStabilizeUnfocusedQueryEditorPointerDown(createEvent({ altKey: true }), { hasFocus: false })).toBe(false);
     expect(shouldStabilizeUnfocusedQueryEditorPointerDown(createEvent(), null)).toBe(false);
   });
 });
@@ -73,19 +75,16 @@ describe("preserveQueryEditorScrollPosition", () => {
 });
 
 describe("stabilizeUnfocusedQueryEditorPointerDown", () => {
-  it("prevents the default focus scroll and restores the viewport", () => {
+  it("focuses and restores the viewport while leaving the selection to codemirror", () => {
     const view = createView();
     const event = createEvent();
     const scheduled: Array<() => void> = [];
 
     expect(stabilizeUnfocusedQueryEditorPointerDown(view, event, (callback) => scheduled.push(callback))).toBe(true);
-    expect(event.preventDefault).toHaveBeenCalledOnce();
-    expect(view.posAtCoords).toHaveBeenCalledWith({ x: 120, y: 80 });
+    expect(event.preventDefault).not.toHaveBeenCalled();
     expect(view.focus).toHaveBeenCalledOnce();
-    expect(view.dispatch).toHaveBeenCalledWith({
-      selection: { anchor: 42 },
-      userEvent: "select.pointer",
-    });
+    expect(view.posAtCoords).not.toHaveBeenCalled();
+    expect(view.dispatch).not.toHaveBeenCalled();
     expect(view.scrollDOM).toEqual({ scrollLeft: 40, scrollTop: 320 });
 
     view.scrollDOM.scrollLeft = 12;
@@ -101,15 +100,19 @@ describe("stabilizeUnfocusedQueryEditorPointerDown", () => {
     expect(stabilizeUnfocusedQueryEditorPointerDown(view, event)).toBe(false);
     expect(event.preventDefault).not.toHaveBeenCalled();
     expect(view.focus).not.toHaveBeenCalled();
+    expect(view.posAtCoords).not.toHaveBeenCalled();
     expect(view.dispatch).not.toHaveBeenCalled();
   });
 
-  it("focuses without moving the caret when the click is outside the document", () => {
-    const view = createView(false, null);
-    const event = createEvent();
+  it("does not intercept modifier clicks or non-left buttons", () => {
+    for (const overrides of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }, { button: 1 }, { button: 2 }]) {
+      const view = createView();
+      const event = createEvent(overrides);
 
-    expect(stabilizeUnfocusedQueryEditorPointerDown(view, event, () => {})).toBe(true);
-    expect(view.focus).toHaveBeenCalledOnce();
-    expect(view.dispatch).not.toHaveBeenCalled();
+      expect(stabilizeUnfocusedQueryEditorPointerDown(view, event)).toBe(false);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(view.focus).not.toHaveBeenCalled();
+      expect(view.dispatch).not.toHaveBeenCalled();
+    }
   });
 });
