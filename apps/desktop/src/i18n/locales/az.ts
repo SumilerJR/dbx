@@ -2248,6 +2248,8 @@ export default withEnglishFallback({
     noAlterSqlAvailable: "Bu sütun üçün ALTER SQL mövcud deyil",
     copyAlterSqlFailed: "Kopyalamaq mümkün olmadı: {message}",
     copySqlCondition: "SQL şərtini kopyala",
+    copyQuerySql: "SQL-i kopyala",
+    copyExecutableSql: "SQL-i kopyala (şərhlərsiz)",
     transpose: "Sətri transponə et",
     transposeMultiRowToggle: "Çoxsətirli",
     transposeSingleRow: "Cari sətir",
