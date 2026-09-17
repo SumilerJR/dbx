@@ -53,6 +53,7 @@ import { translateBackendError } from "@/i18n/backend-errors";
 import * as api from "@/lib/backend/api";
 import { connectionRedactedNameLabel } from "@/lib/connection/connectionPresentation";
 import { quickConnectionOpenTarget } from "@/lib/connection/connectionOpenTarget";
+import { OBJECT_BROWSER_SEARCH_FOCUS_EVENT, objectBrowserSearchFocusTabId } from "@/lib/tabs/objectBrowserSearchFocus";
 import { parseRecentConnectionIds, rankRecentConnections, RECENT_CONNECTION_IDS_STORAGE_KEY, recordRecentConnection } from "@/lib/connection/recentConnections";
 import { resolveDefaultDatabase } from "@/lib/database/defaultDatabase";
 import { normalizeSqliteNamespace } from "@/lib/database/sqliteNamespace";
@@ -1066,6 +1067,19 @@ function activateSettingsPage() {
 
 function activateQuerySurface() {
   activateMainContentSurface("query");
+}
+
+async function focusRequestedObjectBrowserSearch(event: Event) {
+  const tabId = objectBrowserSearchFocusTabId(event);
+  if (!tabId) return;
+  await nextTick();
+  let remainingFrames = 8;
+  const focusWhenReady = () => {
+    if (queryStore.activeTabId !== tabId || contentAreaRef.value?.focusSearch()) return;
+    remainingFrames -= 1;
+    if (remainingFrames > 0) window.requestAnimationFrame(focusWhenReady);
+  };
+  focusWhenReady();
 }
 
 function activateOpenSpecialPageFallback() {
@@ -2729,18 +2743,23 @@ async function changeActiveConnection(tabId: string, connectionId: string) {
   if (!connection) return;
   const initialDatabase = resolveDefaultDatabase(connection, []);
   queryStore.updateConnection(tab.id, connectionId, initialDatabase);
+  let isCurrentTarget = queryStore.createExecutionTargetGuard(tab.id);
   if (tab.externalSqlPath) rememberExternalSqlFileTarget(tab.externalSqlPath, { connectionId, database: initialDatabase, catalog: undefined, schema: undefined });
   connectionStore.activeConnectionId = connectionId;
   try {
     await connectionStore.ensureConnected(connectionId);
+    if (!isCurrentTarget()) return;
     const options = await getDatabaseOptions(connectionId);
+    if (!isCurrentTarget()) return;
     const database = resolveDefaultDatabase(connection, options);
     queryStore.updateDatabase(tab.id, database);
+    isCurrentTarget = queryStore.createExecutionTargetGuard(tab.id);
     if (tab.externalSqlPath) rememberExternalSqlFileTarget(tab.externalSqlPath, { connectionId, database, catalog: undefined, schema: undefined });
     if (connection.default_schema || connection.db_type === "oracle") {
       try {
         // A configured default wins. Otherwise Oracle returns the session's current schema first.
         const orderedSchemas = connection.default_schema ? [] : await api.listSchemas(connectionId, database);
+        if (!isCurrentTarget()) return;
         const schema = schemaAfterConnectionSwitch(connection.db_type, orderedSchemas, connection.default_schema);
         const latestTab = queryStore.tabs.find((candidate) => candidate.id === tab.id);
         if (schema && latestTab && latestTab.connectionId === connectionId) {
@@ -2752,6 +2771,7 @@ async function changeActiveConnection(tabId: string, connectionId: string) {
       }
     }
   } catch (e: any) {
+    if (!isCurrentTarget()) return;
     toast(
       t("connection.connectFailed", {
         message: translateBackendError(t, e),
@@ -3625,6 +3645,7 @@ onMounted(async () => {
   document.addEventListener("visibilitychange", handleTabSwitcherVisibilityChange);
   window.addEventListener("dbx-open-driver-store", openDriverStoreFromEvent);
   window.addEventListener("dbx:activate-query-surface", activateQuerySurface);
+  window.addEventListener(OBJECT_BROWSER_SEARCH_FOCUS_EVENT, focusRequestedObjectBrowserSearch);
   window.addEventListener("dbx-mcp-status-changed", handleMcpStatusChanged);
   window.addEventListener("dbx:ai-run-notify", handleAiRunNotify);
   if (isDesktop) {
@@ -3708,6 +3729,7 @@ onUnmounted(() => {
   tabSwitcherKeyboard.reset();
   window.removeEventListener("dbx-open-driver-store", openDriverStoreFromEvent);
   window.removeEventListener("dbx:activate-query-surface", activateQuerySurface);
+  window.removeEventListener(OBJECT_BROWSER_SEARCH_FOCUS_EVENT, focusRequestedObjectBrowserSearch);
   window.removeEventListener("dbx-mcp-status-changed", handleMcpStatusChanged);
   window.removeEventListener("dbx:ai-run-notify", handleAiRunNotify);
   document.removeEventListener("contextmenu", handleContextMenu);

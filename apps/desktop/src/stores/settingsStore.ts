@@ -24,16 +24,18 @@ import { normalizeSidebarCopyTableNameSeparator } from "@/lib/sidebar/sidebarTab
 import type { SidebarActivation } from "@/lib/sidebar/treeNodeClick";
 import { DEFAULT_SQL_SNIPPETS } from "@/lib/sql/sqlCompletion";
 import { DEFAULT_SQL_FORMATTER_SETTINGS, normalizeSqlFormatterSettings, type SqlFormatterSettings } from "@/lib/sql/sqlFormatterConfig";
+import { canonicalSqlShortcutSql, DEFAULT_SQL_SHORTCUTS, deriveSqlShortcutDatabaseTypes, mergeDefaultSqlShortcuts, normalizeSqlShortcutDatabaseTypes, normalizeSqlShortcutKind, normalizeSqlShortcutLimit, normalizeSqlShortcutSqlByDatabaseType } from "@/lib/sql/sqlShortcutActions";
 import { normalizeSqlVariableSyntaxOverrides, type SqlVariableSyntaxOverrides } from "@/lib/sql/sqlVariableSyntax";
 import { DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS, normalizeTableColumnTemplateFields } from "@/lib/table/tableColumnTemplates";
 import { type DataTabReuseMode, DEFAULT_DATA_TAB_REUSE_MODE, normalizeDataTabReuseMode } from "@/lib/tabs/dataTabReuseMode";
+import { normalizeTableHoverLookupMode, type TableHoverLookupMode } from "@/lib/editor/hoverTableLookup";
 import { normalizeCompletionTriggerMode, type SqlCompletionTriggerMode } from "@/lib/sql/sqlCompletionTriggerPolicy";
 import { DEFAULT_CSV_QUOTE_MODE, normalizeCsvQuoteMode, type CsvQuoteMode } from "@/lib/export/csvQuoteMode";
 import { configureMetadataRuntimeCache, METADATA_CACHE_DEFAULT_MEMORY_MB, normalizeMetadataCacheMemoryMb } from "@/lib/metadata/metadataRuntimeCache";
 import type { AiApiStyle, AiAssistantMode, AiAuthMethod, AiChatSelectionState, AiConfig, AiConfigItem, AiConfiguredModel, AiEffortLevel, AiEffortSelection, AiModelEffortPreference, AiProvider, AiReasoningLevel, AiTestConnectionResult } from "@/types/ai";
 import type { SqlShortcutAction, SqlSnippet, TableInfoTab } from "@/types/database";
 
-export type { AiApiStyle, AiAuthMethod, AiChatSelectionState, AiConfig, AiConfigItem, AiConfiguredModel, AiEffortLevel, AiEffortSelection, AiProvider, AiReasoningLevel, AiTestConnectionResult, CsvQuoteMode, DataTabReuseMode, SavedSqlOpenTargetMode, SqlCompletionTriggerMode };
+export type { AiApiStyle, AiAuthMethod, AiChatSelectionState, AiConfig, AiConfigItem, AiConfiguredModel, AiEffortLevel, AiEffortSelection, AiProvider, AiReasoningLevel, AiTestConnectionResult, CsvQuoteMode, DataTabReuseMode, SavedSqlOpenTargetMode, SqlCompletionTriggerMode, TableHoverLookupMode };
 
 export interface DesktopSettings {
   show_tray_icon: boolean;
@@ -895,6 +897,7 @@ export interface EditorSettings {
   sqlVariableSyntaxOverrides: SqlVariableSyntaxOverrides;
   continueOnErrorOnBatch: boolean;
   showTableDdlHoverPreview: boolean;
+  tableHoverLookupMode: TableHoverLookupMode;
   clickTableNavigationTarget: ClickTableNavigationTarget;
   completionTriggerMode: SqlCompletionTriggerMode;
   defaultTransactionMode: DefaultTransactionMode;
@@ -1119,7 +1122,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   globalDateTimeExportFormat: "",
   globalDateTimeImportFormat: "",
   snippets: DEFAULT_SQL_SNIPPETS,
-  sqlShortcuts: [],
+  sqlShortcuts: DEFAULT_SQL_SHORTCUTS,
   tableColumnTemplateFields: [...DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS],
   exportBatchSize: 2000,
   csvQuoteMode: DEFAULT_CSV_QUOTE_MODE,
@@ -1136,6 +1139,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   sqlVariableSyntaxOverrides: {},
   continueOnErrorOnBatch: false,
   showTableDdlHoverPreview: true,
+  tableHoverLookupMode: "fallback",
   clickTableNavigationTarget: "data",
   completionTriggerMode: "positional",
   defaultTransactionMode: "auto",
@@ -1364,15 +1368,30 @@ function normalizeSqlShortcuts(value: unknown, existing?: SqlShortcutAction[]): 
     // 与普通动作一样会重新劫持 macOS 的 ⌘H。此处直接丢弃保留组合——SQL 快捷键
     // 没有“平台默认值”这一概念（它是用户自定义模板的专属触发键），清空即视为未绑定。
     const normalizedShortcut = isReservedShortcut(shortcut) ? "" : shortcut;
-    valid.push({
+    const kind = normalizeSqlShortcutKind(item.kind);
+    let databaseTypes = normalizeSqlShortcutDatabaseTypes(item.databaseTypes);
+    const entry: SqlShortcutAction = {
       id: item.id,
       label: item.label,
       shortcut: normalizedShortcut,
       sql: item.sql,
       enabled: item.enabled !== false,
-    });
+    };
+    const sqlByDatabaseType = normalizeSqlShortcutSqlByDatabaseType(item.sqlByDatabaseType);
+    if (sqlByDatabaseType && kind !== "select-limit") entry.sqlByDatabaseType = sqlByDatabaseType;
+    databaseTypes = deriveSqlShortcutDatabaseTypes(databaseTypes, entry.sqlByDatabaseType);
+    if (databaseTypes) entry.databaseTypes = databaseTypes;
+    if (kind === "select-limit") {
+      entry.kind = "select-limit";
+      entry.limit = normalizeSqlShortcutLimit(item.limit);
+      entry.sql = canonicalSqlShortcutSql(entry);
+      delete entry.databaseTypes;
+      delete entry.sqlByDatabaseType;
+    }
+    valid.push(entry);
   }
-  return valid;
+  if (valid.length === 0) return DEFAULT_SQL_SHORTCUTS.map((action) => ({ ...action }));
+  return mergeDefaultSqlShortcuts(valid);
 }
 
 function normalizeToolbarItems(items: Partial<ToolbarItems> | undefined): ToolbarItems {
@@ -1650,6 +1669,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     sqlVariableSyntaxOverrides: normalizeSqlVariableSyntaxOverrides(settings.sqlVariableSyntaxOverrides),
     continueOnErrorOnBatch: settings.continueOnErrorOnBatch === true,
     showTableDdlHoverPreview: typeof settings.showTableDdlHoverPreview === "boolean" ? settings.showTableDdlHoverPreview : DEFAULT_EDITOR_SETTINGS.showTableDdlHoverPreview,
+    tableHoverLookupMode: normalizeTableHoverLookupMode(settings.tableHoverLookupMode, DEFAULT_EDITOR_SETTINGS.tableHoverLookupMode),
     clickTableNavigationTarget: normalizeClickTableNavigationTarget(settings.clickTableNavigationTarget),
     completionTriggerMode: normalizeCompletionTriggerMode(settings.completionTriggerMode),
     defaultTransactionMode: normalizeDefaultTransactionMode(settings.defaultTransactionMode),
@@ -2374,6 +2394,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.sqlVariableSyntaxOverrides !== undefined) editorSettings.value.sqlVariableSyntaxOverrides = normalizeSqlVariableSyntaxOverrides(partial.sqlVariableSyntaxOverrides);
     if (partial.continueOnErrorOnBatch !== undefined) editorSettings.value.continueOnErrorOnBatch = partial.continueOnErrorOnBatch === true;
     if (partial.showTableDdlHoverPreview !== undefined) editorSettings.value.showTableDdlHoverPreview = partial.showTableDdlHoverPreview === true;
+    if (partial.tableHoverLookupMode !== undefined) editorSettings.value.tableHoverLookupMode = normalizeTableHoverLookupMode(partial.tableHoverLookupMode, DEFAULT_EDITOR_SETTINGS.tableHoverLookupMode);
     if (partial.clickTableNavigationTarget !== undefined) editorSettings.value.clickTableNavigationTarget = normalizeClickTableNavigationTarget(partial.clickTableNavigationTarget);
     if (partial.completionTriggerMode !== undefined) editorSettings.value.completionTriggerMode = normalizeCompletionTriggerMode(partial.completionTriggerMode);
     if (partial.defaultTransactionMode !== undefined) editorSettings.value.defaultTransactionMode = normalizeDefaultTransactionMode(partial.defaultTransactionMode);
