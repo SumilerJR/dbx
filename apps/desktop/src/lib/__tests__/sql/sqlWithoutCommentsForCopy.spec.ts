@@ -44,4 +44,25 @@ order by id desc`);
   it("returns empty input unchanged", () => {
     expect(sqlWithoutCommentsForCopy("")).toBe("");
   });
+
+  it.each([
+    ["SELECT/* note */1", "SELECT 1"],
+    ["SELECT id/* note */FROM items", "SELECT id FROM items"],
+    ["SELECT 1-/* note */-2", "SELECT 1- -2"],
+  ])("preserves token boundaries in %s", (sql, expected) => {
+    expect(sqlWithoutCommentsForCopy(sql, "postgres")).toBe(expected);
+  });
+
+  it.each(["SELECT 'line1\n\nline2'", "SELECT 'line1 \nline2'", "SELECT $$line1\n\nline2$$", 'SELECT "line1 \n\nline2" FROM items', "SELECT 'unfinished literal \n "])("preserves whitespace inside non-comment tokens in %s", (sql) => {
+    expect(sqlWithoutCommentsForCopy(sql, "postgres")).toBe(sql);
+  });
+
+  it("removes only exterior blank lines and preserves CRLF separators", () => {
+    expect(sqlWithoutCommentsForCopy("SELECT 1\r\n-- note\r\n\r\nFROM items", "postgres")).toBe("SELECT 1\r\nFROM items");
+  });
+
+  it("preserves multiline executable comments and optimizer hints", () => {
+    const sql = "SELECT /*!40101 1\n\n + 2 */ /*+\n\n INDEX(items idx) */ FROM items";
+    expect(sqlWithoutCommentsForCopy(sql, "mysql")).toBe(sql);
+  });
 });

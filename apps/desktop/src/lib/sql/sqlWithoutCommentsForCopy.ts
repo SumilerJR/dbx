@@ -8,11 +8,8 @@ function keepSqlComment(text: string): boolean {
   return text.startsWith("/*+") || text.startsWith("/*!");
 }
 
-function collapseBlankLines(sql: string): string {
-  return sql
-    .replace(/[ \t]+$/gm, "")
-    .replace(/\n{2,}/g, "\n")
-    .trim();
+function collapseBlankLines(whitespace: string): string {
+  return whitespace.replace(/[ \t]+(?=\r?\n)/g, "").replace(/(\r?\n)(?:\r?\n)+/g, "$1");
 }
 
 export function sqlWithoutCommentsForCopy(sql: string, databaseType?: DatabaseType): string {
@@ -26,11 +23,16 @@ export function sqlWithoutCommentsForCopy(sql: string, databaseType?: DatabaseTy
 
   let output = "";
   let cursor = 0;
+  let whitespace = "";
   for (const token of tokens) {
-    if (token.kind !== "comment" || keepSqlComment(token.text)) continue;
-    output += sql.slice(cursor, token.span.start);
+    whitespace += sql.slice(cursor, token.span.start);
     cursor = token.span.end;
+    if (token.kind === "comment" && !keepSqlComment(token.text)) {
+      whitespace += token.text.replace(/[^\r\n]/g, "") || " ";
+      continue;
+    }
+    output += (output ? collapseBlankLines(whitespace) : "") + token.text;
+    whitespace = "";
   }
-  output += sql.slice(cursor);
-  return collapseBlankLines(output);
+  return output;
 }
